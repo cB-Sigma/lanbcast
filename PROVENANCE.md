@@ -13,5 +13,17 @@ mask, no broadcast on /31 and /32, loopback and point-to-point links
 skipped) is ordinary IPv4 practice; RFC 919 and RFC 922 describe
 broadcast addressing, and RFC 3021 the /31 case.
 
-The tests and the Example use made-up addresses and a fake PacketConn;
-there is no test data.
+v0.2.0 (2026-10-11) added interface options, the tunnel name list,
+per-interface IPv6 link-local multicast, the probe helpers and
+per-interface sockets, written for this module. Platform behaviour was
+checked by reading, not copied: Go's `net/sockopt_*.go` and
+`net/interface_windows.go` (Go 1.26.2 and 1.27.1) for SO_BROADCAST and
+Windows interface flags, the Linux kernel's `net/ipv4/route.c`
+(`ip_route_output_key_hash_rcu`) for how a limited broadcast picks its
+interface from the source address, and the `IP_BOUND_IF` constant of
+Go's `syscall` package for macOS. All-nodes multicast (ff02::1) and
+link-local scope are ordinary IPv6 practice (RFC 4291). The tunnel name
+list comes from interface names seen on macOS, Linux and BSD hosts.
+
+The tests and the Examples use made-up addresses, made-up interface
+tables, a fake PacketConn and loopback sockets; there is no test data.
