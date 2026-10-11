@@ -1,0 +1,15 @@
+lanbcast
+Copyright 2026 Abhinav Gautam
+
+LAN broadcast helper, in Go.
+
+This module is licensed under the Apache License, Version 2.0 (LICENSE).
+
+The code was written for SigmaM2M (PROVENANCE.md). It contains no code
+from other projects. Its files carry "Copyright 2026 Abhinav Gautam" and
+"SPDX-License-Identifier: Apache-2.0".
+
+Dependencies
+------------
+
+The Go standard library only.
