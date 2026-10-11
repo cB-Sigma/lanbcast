@@ -27,3 +27,13 @@ list comes from interface names seen on macOS, Linux and BSD hosts.
 
 The tests and the Examples use made-up addresses, made-up interface
 tables, a fake PacketConn and loopback sockets; there is no test data.
+
+v0.3.0 (2026-10-12) added the arrival interface from packet information
+and the responder, written for this module. The socket option and control
+message values were taken as facts from the systems' headers, cross-checked
+with golang.org/x/sys v0.48.0's constants (not imported): IP_PKTINFO,
+IPV6_RECVPKTINFO and IPV6_PKTINFO on Linux; IP_RECVPKTINFO,
+IPV6_RECVPKTINFO and IPV6_PKTINFO on macOS; IP_PKTINFO, IPV6_PKTINFO and
+the WSACMSGHDR, IN_PKTINFO and IN6_PKTINFO layouts on Windows. The
+namespace test (netns_linux_test.go and testdata/netns/Dockerfile) and the
+GitHub workflow are ours.

@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.3.0 (2026-10-12)
+
+Added, all backwards compatible.
+
+- `Answer.Interface` from the kernel: on Linux, macOS and Windows every
+  socket asks for each datagram's packet information (IP_PKTINFO,
+  IP_RECVPKTINFO, IPV6_RECVPKTINFO; on Windows through WSARecvMsg), so the
+  arrival interface is exact on one shared socket too.
+  `Answer.InterfaceExact` says when it was not inferred from a subnet.
+  `ProbeConn` turns the option on for the caller's socket. The Windows
+  parsing has not run yet outside the workflow's Windows job.
+- `Responder`, `NewResponder`, `RespondOptions` and `Request`: the device
+  side. Listen on a port on every interface (or a chosen set), IPv4 and
+  optionally IPv6, see each probe's arrival interface, and answer to the
+  sender from the same socket.
+- `TestNetnsMultiLAN`: three LANs from network namespaces and veth pairs,
+  with a dummy interface holding the 255.255.255.255 route, run as root in
+  a privileged container (testdata/netns) and in the workflow. It
+  confirms on Linux what v0.2 documented from kernel source:
+  `PerInterface` reaches a device with no address in its LAN's subnet,
+  the single socket does not.
+- The GitHub workflow runs on ubuntu-latest, macos-latest and
+  windows-latest, vets the BSD builds, and runs the namespace test as
+  root.
+
 ## v0.2.0 (2026-10-11)
 
 Added, all backwards compatible: `WriteBroadcast` keeps its signature,

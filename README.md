@@ -23,8 +23,9 @@ broadcast out of that interface. Standard library only, no cgo.
 | Send the probe and read the answers on the same socket until a context ends (`Probe`, `ProbeConn`, `Collect`) | Implemented |
 | Drop the duplicate answer of a device that heard both the limited and a directed broadcast | Implemented, on by default (`KeepDuplicates` turns it off) |
 | Resend the probe while waiting | Implemented (`Resends`, `ResendInterval`) |
-| Send the limited broadcast out of every LAN interface, not only the one the routing table picks | Implemented, opt-in (`ProbeOptions.PerInterface`): tested on macOS; Linux from kernel source; Windows not tested |
-| Name the interface an answer came in on | Implemented: exact for per-interface sockets and IPv6 link-local senders, inferred from the subnet for other IPv4 senders, empty for a sender outside every local subnet |
+| Send the limited broadcast out of every LAN interface, not only the one the routing table picks | Implemented, opt-in (`ProbeOptions.PerInterface`): tested on macOS and on Linux (three LANs in network namespaces); Windows only on a one-adapter CI runner |
+| Name the interface an answer came in on | Implemented: exact from the kernel on Linux and macOS (tested) and Windows (written from the Windows headers; first run by the workflow's windows-latest job) (`InterfaceExact`); elsewhere exact for per-interface sockets and IPv6 link-local senders, inferred from the subnet for other IPv4 senders |
+| Answer probes: the device side (`Responder`, `Request`) | Implemented: every interface or a chosen set, IPv4 and IPv6, arrival interface, reply to the sender |
 | Send any other destination alone | Implemented |
 | Succeed when at least one send succeeded; otherwise return the first error | Implemented |
 
@@ -48,20 +49,21 @@ relying on a row.
 
 | | this module | `net.ListenPacket` and `WriteTo` 255.255.255.255 | golang.org/x/net/ipv4 `PacketConn` | schollz/peerdiscovery v1.7.6 | lowbit-dev/beacon (2026-05-11 commit) |
 |---|---|---|---|---|---|
-| What it is | send functions over any `net.PacketConn`, and a probe helper that also reads the answers | the standard library (Go sets SO_BROADCAST on IPv4 UDP sockets) | per-packet control messages: choose the outgoing interface (Linux, macOS), read the arrival interface | discovery between peers running the same library, by multicast | send one probe to one address, return the first answer |
+| What it is | send functions over any `net.PacketConn`, a probe helper that also reads the answers, and a responder for the device side | the standard library (Go sets SO_BROADCAST on IPv4 UDP sockets) | per-packet control messages: choose the outgoing interface (Linux, macOS), read the arrival interface | discovery between peers running the same library, by multicast | send one probe to one address, return the first answer |
 | Reaches the LAN while a VPN holds the 255.255.255.255 route | yes, through each LAN's directed broadcast, and with `PerInterface` through a socket bound to each LAN | no | only through code you write: it does not find interfaces or addresses | not applicable (multicast group 239.255.255.250) | no |
 | Finds each interface's directed broadcast address | yes; skips loopback, point-to-point, tunnel names, /31 and /32 | no | no | no | no |
 | IPv6 | ff02::/16 per interface, opt-in | by hand, one zone at a time | through golang.org/x/net/ipv6 | yes (ff02::c by default) | no |
 | Collects answers | all of them until a context ends, duplicates dropped | by hand | by hand | yes, from peers | the first only |
-| Arrival interface | exact for per-interface sockets and IPv6 link-local senders; inferred from the subnet otherwise | no | exact, from control messages (Linux, macOS) | no | no |
+| Answers probes (the device side) | `Responder`: every interface, arrival interface, reply to the sender | by hand | by hand | yes, each peer is both | no |
+| Arrival interface | exact from the kernel's packet information on Linux, macOS and Windows; elsewhere from the binding, the zone or the subnet | no | exact, from control messages (Linux, macOS) | no | no |
 | Works with devices that answer a vendor broadcast probe (WiZ, miIO, TP-Link, EtherNet/IP) | yes | yes, on a host without that VPN route | yes | no, both ends must run it | yes, one answer only; it sends from a dual-stack "udp" socket, which on Windows gets no SO_BROADCAST from Go |
 | Dependencies | none | none | golang.org/x/net (with x/sys) | golang.org/x/net | none |
 
 Pick this module when your program sends a vendor's discovery probe and
-must work on laptops and gateways with VPNs or several interfaces. Use
-plain `net` when the host has one LAN and no VPN. Use x/net/ipv4 when you
-need the exact arrival interface of every IPv4 answer on one shared
-socket, or other per-packet control (TTL, source address), and
+must work on laptops and gateways with VPNs or several interfaces, or
+when it plays the device and must answer such probes (`Responder`). Use
+plain `net` when the host has one LAN and no VPN. Use x/net/ipv4 for other
+per-packet control (TTL, source address, multicast loopback), and
 peerdiscovery when every node runs your own Go program.
 
 ## Operating system notes
@@ -81,17 +83,32 @@ peerdiscovery when every node runs your own Go program.
   IPv4 address. Linux sends a limited broadcast through the interface that
   owns the source address (`net/ipv4/route.c`,
   `ip_route_output_key_hash_rcu`), so SO_BINDTODEVICE and its privilege
-  are not needed. This is checked against the kernel source only; it has
-  not been run on a Linux host with several LANs. The GitHub test job runs
-  the host test on one Ubuntu runner, which logs rather than fails when
-  the runner does not loop broadcasts back.
+  are not needed. Tested with three LANs built from network namespaces
+  and veth pairs and a dummy interface holding the 255.255.255.255 route
+  (as a VPN does), in a privileged container (`TestNetnsMultiLAN`,
+  testdata/netns, and the workflow's netns job): without `PerInterface`
+  only the directed broadcasts reach the LANs, so a device with no
+  address in its LAN's subnet is missed; with it, every device answers,
+  each answer named with its exact interface.
 - **`PerInterface` on macOS.** The socket is bound to the address and to
   the interface with IP_BOUND_IF. Tested on macOS 26 (en0, with Apple's
   peer-to-peer and VPN interfaces present).
 - **`PerInterface` on Windows and the BSDs.** Only the address binding is
   done. Windows is widely reported to send a limited broadcast through the
-  interface of the bound address; this module has not been tested on
-  Windows or the BSDs.
+  interface of the bound address. The workflow runs the tests on a
+  windows-latest runner (one adapter, so it checks the code paths and
+  the packet-information parsing over loopback, not several LANs); the
+  BSDs are only compiled.
+- **Arrival interface.** On Linux (IP_PKTINFO, IPV6_RECVPKTINFO), macOS
+  (IP_RECVPKTINFO, IPV6_RECVPKTINFO) and Windows (IP_PKTINFO and
+  IPV6_PKTINFO through WSARecvMsg; not yet run when v0.3.0 was cut, the
+  workflow's Windows job is its first run) every socket asks the kernel for each
+  datagram's interface index, so `Answer.Interface` and
+  `Request.Interface` are exact (`InterfaceExact`) even on one shared
+  socket. Elsewhere they fall back to the socket's binding, the IPv6 zone
+  or the subnet, as in v0.2. `ProbeConn` turns the option on for the
+  caller's socket too; it only adds control messages, which `ReadFrom`
+  ignores.
 - **Answers sent by broadcast.** A socket bound to a unicast address does
   not receive broadcasts. A device that answers by broadcast rather than
   to the sender is heard by the default single socket, not by
@@ -148,6 +165,21 @@ err = lanbcast.WriteBroadcast(conn, probe, &net.UDPAddr{IP: net.IPv4bcast, Port:
 Read the answers from `conn` as usual, or use `ProbeConn` to send and read
 in one call.
 
+The device side, answering probes (as a simulator or emulated device
+does; `ExampleResponder` runs the same over loopback):
+
+```go
+r, err := lanbcast.NewResponder(38899, nil)
+if err != nil {
+	return err
+}
+defer r.Close()
+err = r.Serve(ctx, func(q lanbcast.Request) []byte {
+	log.Printf("probe from %s on %s", q.From, q.Interface)
+	return []byte(`{"method":"getPilot","result":{"mac":"a8bb50000001"}}`)
+})
+```
+
 ## Documentation
 
 Reference: [pkg.go.dev/github.com/cB-Sigma/lanbcast](https://pkg.go.dev/github.com/cB-Sigma/lanbcast).
@@ -163,7 +195,9 @@ Reference: [pkg.go.dev/github.com/cB-Sigma/lanbcast](https://pkg.go.dev/github.c
 | `ProbeConn` | the same on the caller's socket |
 | `Collect` | `Probe` returning a slice |
 | `ProbeOptions` | `KeepDuplicates`, `Resends`, `ResendInterval`, `BufferSize`, `LocalPort`, `IPv6`, `PerInterface` |
-| `Answer` | sender, bytes, interface |
+| `Answer` | sender, bytes, interface, `InterfaceExact` |
+| `Responder`, `NewResponder` | the device side: answer probes on a port, on every interface or a chosen set (`RespondOptions`) |
+| `Request` | a probe the responder received: sender, bytes, interface |
 
 ## Testing
 
@@ -178,10 +212,28 @@ its own broadcasts or multicasts back to itself). `// Covers: SIG-...`
 comments in tests are requirement IDs of the SigmaM2M project's compliance
 report and have no meaning outside it.
 
+`TestResponderLoopback` probes a `Responder` over loopback and checks that
+both ends get the exact arrival interface from the kernel, which exercises
+each system's packet-information parsing. `TestNetnsMultiLAN` (Linux, root,
+`SIGMA_NETNS=1`) builds three LANs with network namespaces and veth pairs,
+one of them holding a device with no address in its subnet, and a dummy
+interface holding the 255.255.255.255 route as a VPN does, then probes
+`Responder`s in the namespaces with and without `PerInterface` and over
+IPv6:
+
+```
+docker build -t sigma-lanbcast-netns testdata/netns
+docker run --rm --privileged -v "$PWD":/src sigma-lanbcast-netns
+```
+
+The GitHub workflow runs the tests on Linux, macOS and Windows runners,
+and the namespace test as root on Linux.
+
 ### Interop tested against
 
-Not applicable: the module only chooses addresses, sends and reads. The
-libraries that use it are tested against their devices or simulators.
+No other implementation to compare with: the module chooses addresses,
+sends and reads, and its responder answers its own prober in the tests.
+The libraries that use it are tested against their devices or simulators.
 
 ## Related repositories
 
@@ -190,7 +242,8 @@ libraries that use it are tested against their devices or simulators.
 - SigmaM2M's EtherNet/IP, Xiaomi miIO and TP-Link libraries use it for
   their discovery broadcasts.
 
-This module has no simulator.
+This module has no simulator; `Responder` is what simulators of
+discovery-probed devices can build on.
 
 ## Status
 

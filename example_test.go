@@ -130,3 +130,35 @@ func ExampleCollect() {
 		fmt.Println(a.From.IP)
 	}
 }
+
+// A device's side: answer probes on a UDP port, here probed over loopback.
+func ExampleResponder() {
+	r, err := lanbcast.NewResponder(0, &lanbcast.RespondOptions{Loopback: true})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer r.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go r.Serve(ctx, func(q lanbcast.Request) []byte {
+		if string(q.Data) == "who is there?" {
+			return []byte(`{"model":"demo-bulb"}`)
+		}
+		return nil
+	})
+
+	c, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer c.Close()
+	pctx, pcancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer pcancel()
+	to := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: r.LocalAddr().Port}
+	_ = lanbcast.ProbeConn(pctx, c, []byte("who is there?"), to, nil, func(a lanbcast.Answer) {
+		fmt.Println(string(a.Data))
+	})
+	// Output: {"model":"demo-bulb"}
+}

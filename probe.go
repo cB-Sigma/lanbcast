@@ -19,13 +19,18 @@ type Answer struct {
 	From *net.UDPAddr
 	// Data is the datagram.
 	Data []byte
-	// Interface names the interface the answer came in on: the one the
-	// socket was bound to (ProbeOptions.PerInterface), else the zone of an
-	// IPv6 link-local sender, else the interface whose IPv4 subnet holds
-	// the sender's address (an inference: overlapping subnets pick the
-	// first). It is empty when none applies, for example for a sender
-	// outside every local subnet.
+	// Interface names the interface the answer came in on. On Linux,
+	// macOS and Windows the kernel reports it for each datagram (packet
+	// information control messages). Otherwise it is the interface the
+	// socket was bound to (ProbeOptions.PerInterface), else the zone of
+	// an IPv6 link-local sender, else the interface whose IPv4 subnet
+	// holds the sender's address (an inference: overlapping subnets pick
+	// the first). It is empty when none applies, for example for a sender
+	// outside every local subnet on a system without packet information.
 	Interface string
+	// InterfaceExact reports that Interface was not inferred from a
+	// subnet: it came from the kernel, the socket's binding or the zone.
+	InterfaceExact bool
 }
 
 // ProbeOptions configures [Probe], [ProbeConn] and [Collect]. The zero
@@ -117,7 +122,7 @@ func ProbeConn(ctx context.Context, c net.PacketConn, payload []byte, dst *net.U
 	if err != nil {
 		return err
 	}
-	return run(ctx, []sock{{c: c, targets: targets}}, payload, o, handle, true)
+	return run(ctx, []sock{newSock(c, targets, "")}, payload, o, handle, true)
 }
 
 // Collect runs [Probe] and returns the answers in the order they arrived.
@@ -132,6 +137,36 @@ type sock struct {
 	c       net.PacketConn
 	targets []*net.UDPAddr
 	ifname  string // set when the socket is bound to one interface
+	pkt     bool   // the kernel reports each datagram's arrival interface
+	v6      bool
+}
+
+// newSock asks the kernel for arrival interfaces on c when it is a UDP
+// socket and the system supports it (Linux, macOS, Windows).
+func newSock(c net.PacketConn, targets []*net.UDPAddr, ifname string) sock {
+	s := sock{c: c, targets: targets, ifname: ifname}
+	if uc, ok := c.(*net.UDPConn); ok {
+		if la, ok := uc.LocalAddr().(*net.UDPAddr); ok && la.IP.To4() == nil && len(la.IP) == net.IPv6len {
+			s.v6 = true
+		}
+		s.pkt = enablePktinfo(uc, s.v6)
+	}
+	return s
+}
+
+// interfaceName names an interface index, remembering the answers.
+var ifNames sync.Map // int -> string
+
+func interfaceName(index int) string {
+	if v, ok := ifNames.Load(index); ok {
+		return v.(string)
+	}
+	ifc, err := net.InterfaceByIndex(index)
+	if err != nil {
+		return ""
+	}
+	ifNames.Store(index, ifc.Name)
+	return ifc.Name
 }
 
 // openSockets opens the sockets o asks for. It returns those it could
@@ -163,7 +198,7 @@ func openSockets(ctx context.Context, port int, o *ProbeOptions) ([]sock, error)
 			for _, b := range ifc.broadcasts() {
 				targets = append(targets, &net.UDPAddr{IP: b, Port: port})
 			}
-			socks = append(socks, sock{c: c, targets: targets, ifname: ifc.Name})
+			socks = append(socks, newSock(c, targets, ifc.Name))
 		}
 	} else {
 		var lc net.ListenConfig
@@ -171,7 +206,7 @@ func openSockets(ctx context.Context, port int, o *ProbeOptions) ([]sock, error)
 		if err != nil {
 			keep(err)
 		} else {
-			socks = append(socks, sock{c: c, targets: expand(limited, ifs)})
+			socks = append(socks, newSock(c, expand(limited, ifs), ""))
 		}
 	}
 	if o.IPv6 {
@@ -182,7 +217,7 @@ func openSockets(ctx context.Context, port int, o *ProbeOptions) ([]sock, error)
 			if err != nil {
 				keep(err)
 			} else {
-				socks = append(socks, sock{c: c, targets: targets})
+				socks = append(socks, newSock(c, targets, ""))
 			}
 		}
 	}
@@ -318,8 +353,23 @@ func resend(ctx context.Context, socks []sock, payload []byte, n int, interval t
 // returns an error only for a failure that is not ctx ending.
 func read(ctx context.Context, s sock, size int, answers chan<- Answer) error {
 	buf := make([]byte, size)
+	oob := make([]byte, oobSize)
+	uc, _ := s.c.(*net.UDPConn)
 	for {
-		n, from, err := s.c.ReadFrom(buf)
+		var (
+			n, oobn int
+			from    net.Addr
+			err     error
+		)
+		if s.pkt && uc != nil {
+			var ua *net.UDPAddr
+			n, oobn, _, ua, err = uc.ReadMsgUDP(buf, oob)
+			if ua != nil {
+				from = ua
+			}
+		} else {
+			n, from, err = s.c.ReadFrom(buf)
+		}
 		if err != nil {
 			var ne net.Error
 			if ctx.Err() != nil || (errors.As(err, &ne) && ne.Timeout()) {
@@ -331,9 +381,14 @@ func read(ctx context.Context, s sock, size int, answers chan<- Answer) error {
 		if !ok {
 			continue
 		}
-		a := Answer{From: ua, Data: append([]byte(nil), buf[:n]...), Interface: s.ifname}
-		if a.Interface == "" {
-			a.Interface = ua.Zone
+		a := Answer{From: ua, Data: append([]byte(nil), buf[:n]...), Interface: s.ifname, InterfaceExact: s.ifname != ""}
+		if s.pkt {
+			if name := interfaceName(pktinfoIndex(oob[:oobn], s.v6)); name != "" {
+				a.Interface, a.InterfaceExact = name, true
+			}
+		}
+		if a.Interface == "" && ua.Zone != "" {
+			a.Interface, a.InterfaceExact = ua.Zone, true
 		}
 		select {
 		case answers <- a:

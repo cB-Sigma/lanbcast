@@ -13,3 +13,10 @@ Dependencies
 ------------
 
 The Go standard library only.
+
+Test tooling
+------------
+
+testdata/netns/Dockerfile builds on the golang image (Docker Official
+Image; Go under BSD-3-Clause) and installs Debian's iproute2 and procps;
+nothing of them is part of this module.
