@@ -17,9 +17,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The oldest Go go.mod allows, except on macOS: binaries that Go
+      # before 1.23 links with -race lack LC_UUID, which macOS 26's dyld
+      # refuses, so macOS runs the current release.
       - uses: actions/setup-go@v5
+        if: runner.os != 'macOS'
         with:
           go-version-file: go.mod
+      - uses: actions/setup-go@v5
+        if: runner.os == 'macOS'
+        with:
+          go-version: stable
       - name: gofmt
         if: runner.os == 'Linux'
         run: test -z "$(gofmt -l .)"
