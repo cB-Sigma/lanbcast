@@ -23,6 +23,27 @@ library only, no cgo.
 A device that hears both the limited and a directed broadcast answers
 twice; callers key answers by device.
 
+## Choosing how to send a discovery broadcast
+
+This module is under 100 lines over the standard library; the choice is
+mostly whether to write those lines yourself. Compared from source in
+October 2026 (Go 1.27.1, golang.org/x/net v0.61.0). Check the projects
+themselves before relying on a row.
+
+| | this module | `net.ListenPacket` and `WriteTo` 255.255.255.255 | golang.org/x/net/ipv4 `PacketConn` | schollz/peerdiscovery v1.7.6 | lowbit-dev/beacon (2026-05-11 commit) |
+|---|---|---|---|---|---|
+| What it is | one function over any `net.PacketConn` | the standard library (Go sets SO_BROADCAST on IPv4 UDP sockets) | per-packet control messages: choose the outgoing interface (Linux, macOS), read the arrival interface | discovery between peers running the same library, by multicast | send one probe to one address, return the first answer |
+| Reaches the LAN while a VPN holds the 255.255.255.255 route | yes, through the directed broadcast of each LAN | no | only through code you write: it does not find interfaces or addresses | not applicable (multicast group 239.255.255.250) | no |
+| Finds each interface's directed broadcast address | yes; skips loopback, point-to-point, /31 and /32 | no | no | no | no |
+| Works with devices that answer a vendor broadcast probe (WiZ, miIO, TP-Link, EtherNet/IP) | yes | yes, on a host without that VPN route | yes | no, both ends must run it | yes, one answer only |
+| Dependencies | none | none | golang.org/x/net (with x/sys) | golang.org/x/net | none |
+
+Pick this module when your program sends a vendor's discovery probe and
+must work on laptops and gateways with VPNs or several interfaces. Use
+plain `net` when the host has one LAN and no VPN. Use x/net/ipv4 when you
+also need to know which interface an answer came in on, and
+peerdiscovery when every node runs your own Go program.
+
 ## Install
 
 ```
